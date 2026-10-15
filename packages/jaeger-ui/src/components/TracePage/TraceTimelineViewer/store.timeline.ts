@@ -12,6 +12,8 @@ import {
   shouldDisableCollapse,
   trimFocusedDetailStatesForSidePanel,
 } from './timeline-utils';
+import { SpanTypeFilter } from './generateRowStates';
+import { GenAISpanKind } from '../../../types/otel';
 
 type TraceTimelineInteractionStore = {
   traceID: string | null;
@@ -19,7 +21,9 @@ type TraceTimelineInteractionStore = {
   detailStates: Map<string, DetailState>;
   shouldScrollToFirstUiFindMatch: boolean;
   prunedServices: Set<string>;
+  spanTypeFilter: SpanTypeFilter;
   setPrunedServices: (pruned: Set<string>) => void;
+  setSpanTypeFilter: (filter: SpanTypeFilter) => void;
   clearServiceFilter: () => void;
   // Resets ephemeral fields for a new trace and optionally pre-apply a uiFind filter
   setTrace: (trace: IOtelTrace, uiFind?: string | TNil) => void;
@@ -45,8 +49,17 @@ export const useTraceTimelineStore = create<TraceTimelineInteractionStore>()((se
   detailStates: new Map<string, DetailState>(),
   shouldScrollToFirstUiFindMatch: false,
   prunedServices: new Set<string>(),
+  spanTypeFilter: { hiddenGenAIKinds: new Set<GenAISpanKind>(), hideNonGenAISpans: false },
 
   setPrunedServices: (pruned: Set<string>) => set({ prunedServices: new Set(pruned) }),
+
+  setSpanTypeFilter: filter =>
+    set({
+      spanTypeFilter: {
+        hiddenGenAIKinds: new Set(filter.hiddenGenAIKinds),
+        hideNonGenAISpans: filter.hideNonGenAISpans,
+      },
+    }),
 
   clearServiceFilter: () => set({ prunedServices: new Set<string>() }),
 
@@ -62,6 +75,7 @@ export const useTraceTimelineStore = create<TraceTimelineInteractionStore>()((se
       detailStates: new Map<string, DetailState>(),
       shouldScrollToFirstUiFindMatch: false,
       prunedServices: new Set<string>(),
+      spanTypeFilter: { hiddenGenAIKinds: new Set<GenAISpanKind>(), hideNonGenAISpans: false },
     };
 
     if (uiFind) {

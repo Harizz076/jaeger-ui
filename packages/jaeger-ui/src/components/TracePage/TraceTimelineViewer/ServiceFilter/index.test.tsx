@@ -79,6 +79,39 @@ describe('ServiceFilter', () => {
     });
   });
 
+  it('applies GenAI span type visibility choices', async () => {
+    const trace = makeTrace(['svc-a', 'svc-b']) as IOtelTrace;
+    Object.assign(trace, {
+      isGenAITrace: true,
+      spans: [
+        {
+          spanID: 'llm',
+          genAIKind: 'LLM_CALL',
+          resource: { serviceName: 'svc-a', attributes: [] },
+        },
+      ],
+    });
+    const onGenAIApply = vi.fn();
+    render(
+      <ServiceFilter
+        trace={trace}
+        prunedServices={new Set()}
+        spanTypeFilter={{ hiddenGenAIKinds: new Set(), hideNonGenAISpans: false }}
+        onApply={onGenAIApply}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('service-filter-button'));
+    await screen.findByLabelText('Hide LLM calls');
+    fireEvent.click(screen.getByLabelText('Hide LLM calls'));
+    fireEvent.click(screen.getByText('Apply'));
+
+    expect(onGenAIApply).toHaveBeenCalledWith(new Set(), {
+      hiddenGenAIKinds: new Set(['LLM_CALL']),
+      hideNonGenAISpans: false,
+    });
+  });
+
   it('shows root badge for root service', async () => {
     render(
       <ServiceFilter trace={makeTrace(['svc-a', 'svc-b'])} prunedServices={new Set()} onApply={onApply} />

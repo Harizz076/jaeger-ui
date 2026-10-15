@@ -142,6 +142,55 @@ describe('generateRowStates', () => {
       expect(placeholder.spanIndex).toBeGreaterThanOrEqual(lastVisible.spanIndex);
     });
   });
+
+  describe('span type filter pruning', () => {
+    it('promotes GenAI children when non-GenAI spans are hidden', () => {
+      const spans = [
+        makeSpan({
+          spanID: 'root',
+          depth: 0,
+          resource: { serviceName: 'svc-a', attributes: makeAttributes() },
+        }),
+        makeSpan({
+          spanID: 'genai-child',
+          depth: 1,
+          genAIKind: 'LLM_CALL',
+          resource: { serviceName: 'svc-a', attributes: makeAttributes() },
+        }),
+      ];
+      const rows = generateRowStates(spans, new Set(), new Map(), 'inline', new Set(), {
+        hiddenGenAIKinds: new Set(),
+        hideNonGenAISpans: true,
+      });
+      const visibleRows = rows.filter(r => !('isPrunedPlaceholder' in r));
+      expect(visibleRows.map(r => r.span.spanID)).toEqual(['genai-child']);
+      expect(visibleRows[0].span.depth).toBe(0);
+    });
+
+    it('promotes another GenAI type when a selected type is hidden', () => {
+      const spans = [
+        makeSpan({
+          spanID: 'root',
+          depth: 0,
+          genAIKind: 'AGENT',
+          resource: { serviceName: 'svc-a', attributes: makeAttributes() },
+        }),
+        makeSpan({
+          spanID: 'child',
+          depth: 1,
+          genAIKind: 'LLM_CALL',
+          resource: { serviceName: 'svc-a', attributes: makeAttributes() },
+        }),
+      ];
+      const rows = generateRowStates(spans, new Set(), new Map(), 'inline', new Set(), {
+        hiddenGenAIKinds: new Set(['AGENT']),
+        hideNonGenAISpans: false,
+      });
+      const visibleRows = rows.filter(r => !('isPrunedPlaceholder' in r));
+      expect(visibleRows.map(r => r.span.spanID)).toEqual(['child']);
+      expect(visibleRows[0].span.depth).toBe(0);
+    });
+  });
 });
 
 describe('isSpanPruned', () => {

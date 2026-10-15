@@ -11,7 +11,7 @@ import memoizeOne from 'memoize-one';
 import type { Location, NavigateFunction } from 'react-router-dom';
 import { actions } from './duck';
 import { makeCriticalPathContext } from './criticalPath';
-import generateRowStates, { RowState } from './generateRowStates';
+import generateRowStates, { RowState, SpanTypeFilter } from './generateRowStates';
 import ListView from './ListView';
 import PrunedSpanRow from './PrunedSpanRow';
 import SpanBarRow from './SpanBarRow';
@@ -81,6 +81,7 @@ type RouteProps = {
 type TDerivedStateProps = {
   selectedSpanID: string | null;
   prunedServices: Set<string>;
+  spanTypeFilter: SpanTypeFilter;
 };
 
 type VirtualizedTraceViewProps = TVirtualizedTraceViewOwnProps &
@@ -104,7 +105,8 @@ function generateRowStatesFromTrace(
   childrenHiddenIDs: Set<string>,
   detailStates: Map<string, DetailState | TNil>,
   detailPanelMode: 'inline' | 'sidepanel',
-  prunedServices: Set<string>
+  prunedServices: Set<string>,
+  spanTypeFilter: SpanTypeFilter
 ): RowStateData {
   if (!trace) {
     return {
@@ -118,7 +120,8 @@ function generateRowStatesFromTrace(
     childrenHiddenIDs,
     detailStates,
     detailPanelMode,
-    prunedServices
+    prunedServices,
+    spanTypeFilter
   );
 
   const spanIndexToRowIndex = new Map<number, number>();
@@ -166,9 +169,16 @@ export const VirtualizedTraceViewImpl = React.memo(function VirtualizedTraceView
   );
 
   const getRowStates = useCallback((): RowState[] => {
-    const { trace, childrenHiddenIDs, detailStates, detailPanelMode, prunedServices } = propsRef.current;
-    return memoizedGenerateRowStates(trace, childrenHiddenIDs, detailStates, detailPanelMode, prunedServices)
-      .rows;
+    const { trace, childrenHiddenIDs, detailStates, detailPanelMode, prunedServices, spanTypeFilter } =
+      propsRef.current;
+    return memoizedGenerateRowStates(
+      trace,
+      childrenHiddenIDs,
+      detailStates,
+      detailPanelMode,
+      prunedServices,
+      spanTypeFilter
+    ).rows;
   }, []);
 
   const getClippingCssClasses = useCallback((): string => {
@@ -232,7 +242,8 @@ export const VirtualizedTraceViewImpl = React.memo(function VirtualizedTraceView
       propsRef.current.childrenHiddenIDs,
       propsRef.current.detailStates,
       propsRef.current.detailPanelMode,
-      propsRef.current.prunedServices
+      propsRef.current.prunedServices,
+      propsRef.current.spanTypeFilter
     );
 
     const rowIndex = spanIndexToRowIndex.get(index);
@@ -625,6 +636,7 @@ function VirtualizedTraceViewWrapper(
   const detailStates = useTraceTimelineStore(s => s.detailStates);
   const shouldScrollToFirstUiFindMatch = useTraceTimelineStore(s => s.shouldScrollToFirstUiFindMatch);
   const prunedServices = useTraceTimelineStore(s => s.prunedServices);
+  const spanTypeFilter = useTraceTimelineStore(s => s.spanTypeFilter);
   const selectedSpanID = detailPanelMode === 'sidepanel' ? getSelectedSpanID(detailStates) : null;
 
   const zustandSetTrace = useTraceTimelineStore(s => s.setTrace);
@@ -746,6 +758,7 @@ function VirtualizedTraceViewWrapper(
     detailStates,
     shouldScrollToFirstUiFindMatch,
     prunedServices,
+    spanTypeFilter,
     selectedSpanID,
     setTrace,
     childrenToggle,

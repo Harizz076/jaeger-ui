@@ -4,7 +4,17 @@
 import DetailState from './SpanDetail/DetailState';
 import { isErrorSpan } from './utils';
 import { TNil } from '../../../types';
-import { IOtelSpan } from '../../../types/otel';
+import { GenAISpanKind, IOtelSpan } from '../../../types/otel';
+
+export type SpanTypeFilter = {
+  hiddenGenAIKinds: Set<GenAISpanKind>;
+  hideNonGenAISpans: boolean;
+};
+
+export const EMPTY_SPAN_TYPE_FILTER: SpanTypeFilter = {
+  hiddenGenAIKinds: new Set<GenAISpanKind>(),
+  hideNonGenAISpans: false,
+};
 
 export type RowState =
   | {
@@ -38,14 +48,19 @@ function buildVisibleRows(
   childrenHiddenIDs: Set<string>,
   detailStates: Map<string, DetailState | TNil>,
   detailPanelMode: 'inline' | 'sidepanel',
-  prunedServices: Set<string>
+  prunedServices: Set<string>,
+  spanTypeFilter: SpanTypeFilter
 ): { rows: RowState[]; prunedStats: PrunedStats | null } {
-  const hasPruning = prunedServices.size > 0;
+  const hasPruning =
+    prunedServices.size > 0 || spanTypeFilter.hiddenGenAIKinds.size > 0 || spanTypeFilter.hideNonGenAISpans;
   let collapseDepth: number | null = null;
   const rows: RowState[] = [];
 
   // parentByDepth[d] = index into rows of the last emitted span at depth d.
   const parentByDepth: (number | undefined)[] = [];
+  // Display depths let type filters remove a span while promoting its visible
+  // descendants to the nearest visible ancestor.
+  const displayDepthByDepth: (number | undefined)[] = [];
   const childCounts: number[] = [];
   const errorCounts: number[] = [];
 
@@ -61,7 +76,12 @@ function buildVisibleRows(
       collapseDepth = null;
     }
 
-    // Service filter pruning: skip this span and its entire subtree.
+    // Services keep their established behavior: prune a matching span and its
+    // whole subtree. Type filters intentionally differ: only the matching row
+    // is removed so visible descendants can be promoted.
+    const isTypeFiltered = span.genAIKind
+      ? spanTypeFilter.hiddenGenAIKinds.has(span.genAIKind)
+      : spanTypeFilter.hideNonGenAISpans;
     if (hasPruning && prunedServices.has(span.resource.serviceName)) {
       let prunedSpanCount = 1;
       let prunedErrors = isErrorSpan(span) ? 1 : 0;
@@ -77,7 +97,14 @@ function buildVisibleRows(
       // that guard. In that case we intentionally drop the stats — there is no parent
       // row to attach a placeholder to.
       if (depth > 0) {
-        const parentIdx = parentByDepth[depth - 1];
+        let parentIdx: number | undefined;
+        for (let parentDepth = depth - 1; parentDepth >= 0; parentDepth--) {
+          const candidate = parentByDepth[parentDepth];
+          if (candidate != null) {
+            parentIdx = candidate;
+            break;
+          }
+        }
         if (parentIdx != null) {
           childCounts[parentIdx] = (childCounts[parentIdx] || 0) + prunedSpanCount;
           if (prunedErrors > 0) {
@@ -88,17 +115,35 @@ function buildVisibleRows(
       continue;
     }
 
+    if (isTypeFiltered) {
+      parentByDepth[depth] = undefined;
+      displayDepthByDepth[depth] = undefined;
+      continue;
+    }
+
     // Manual collapse.
     if (childrenHiddenIDs.has(spanID)) {
       collapseDepth = depth + 1;
     }
 
+    let parentDisplayDepth = -1;
+    for (let parentDepth = depth - 1; parentDepth >= 0; parentDepth--) {
+      const candidate = displayDepthByDepth[parentDepth];
+      if (candidate != null) {
+        parentDisplayDepth = candidate;
+        break;
+      }
+    }
+    const displayDepth = parentDisplayDepth + 1;
+    const displaySpan = displayDepth === depth ? span : { ...span, depth: displayDepth };
+
     parentByDepth[depth] = rows.length;
-    rows.push({ span, isDetail: false, spanIndex: i });
+    displayDepthByDepth[depth] = displayDepth;
+    rows.push({ span: displaySpan, isDetail: false, spanIndex: i });
 
     // In side panel mode, detail rows are shown in the panel, not inline.
     if (detailPanelMode !== 'sidepanel' && detailStates.has(spanID)) {
-      rows.push({ span, isDetail: true, spanIndex: i });
+      rows.push({ span: displaySpan, isDetail: true, spanIndex: i });
     }
   }
 
@@ -182,7 +227,8 @@ export default function generateRowStates(
   childrenHiddenIDs: Set<string>,
   detailStates: Map<string, DetailState | TNil>,
   detailPanelMode: 'inline' | 'sidepanel',
-  prunedServices: Set<string>
+  prunedServices: Set<string>,
+  spanTypeFilter: SpanTypeFilter = EMPTY_SPAN_TYPE_FILTER
 ): RowState[] {
   if (!spans) {
     return [];
@@ -192,17 +238,34 @@ export default function generateRowStates(
     childrenHiddenIDs,
     detailStates,
     detailPanelMode,
-    prunedServices
+    prunedServices,
+    spanTypeFilter
   );
   return prunedStats ? insertPrunedPlaceholders(rows, prunedStats) : rows;
 }
 
 /**
- * Returns true if a span would be pruned by the service filter.
- * A span is pruned if its own service or any ancestor's service is in prunedServices.
+ * Returns true if a span is not visible under the active filters.
+ * Service filters prune whole subtrees, while type filters apply to the span itself.
  */
-export function isSpanPruned(span: IOtelSpan, prunedServices: Set<string>): boolean {
-  if (prunedServices.size === 0) return false;
+export function isSpanPruned(
+  span: IOtelSpan,
+  prunedServices: Set<string>,
+  spanTypeFilter: SpanTypeFilter = EMPTY_SPAN_TYPE_FILTER
+): boolean {
+  if (
+    prunedServices.size === 0 &&
+    spanTypeFilter.hiddenGenAIKinds.size === 0 &&
+    !spanTypeFilter.hideNonGenAISpans
+  ) {
+    return false;
+  }
+  if (
+    (span.genAIKind && spanTypeFilter.hiddenGenAIKinds.has(span.genAIKind)) ||
+    (!span.genAIKind && spanTypeFilter.hideNonGenAISpans)
+  ) {
+    return true;
+  }
   let current: IOtelSpan | undefined = span;
   while (current) {
     if (prunedServices.has(current.resource.serviceName)) return true;
@@ -218,13 +281,21 @@ export function isSpanPruned(span: IOtelSpan, prunedServices: Set<string>): bool
 export function filterPrunedSpanIDs(
   spanIDs: Set<string> | TNil,
   spanMap: ReadonlyMap<string, IOtelSpan>,
-  prunedServices: Set<string>
+  prunedServices: Set<string>,
+  spanTypeFilter: SpanTypeFilter = EMPTY_SPAN_TYPE_FILTER
 ): Set<string> | TNil {
-  if (!spanIDs || prunedServices.size === 0) return spanIDs;
+  if (
+    !spanIDs ||
+    (prunedServices.size === 0 &&
+      spanTypeFilter.hiddenGenAIKinds.size === 0 &&
+      !spanTypeFilter.hideNonGenAISpans)
+  ) {
+    return spanIDs;
+  }
   const filtered = new Set<string>();
   for (const id of spanIDs) {
     const span = spanMap.get(id);
-    if (span && !isSpanPruned(span, prunedServices)) {
+    if (span && !isSpanPruned(span, prunedServices, spanTypeFilter)) {
       filtered.add(id);
     }
   }

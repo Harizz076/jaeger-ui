@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import queryString from 'query-string';
 
-import { isSpanPruned } from './generateRowStates';
+import { EMPTY_SPAN_TYPE_FILTER, isSpanPruned, SpanTypeFilter } from './generateRowStates';
 import ServiceFilter from './ServiceFilter';
 import { getSelectedSpanID, useTraceTimelineStore } from './store';
 import {
@@ -166,6 +166,8 @@ export function useServiceFilter(
 
   const prunedServices = useTraceTimelineStore(s => s.prunedServices);
   const zustandSetPrunedServices = useTraceTimelineStore(s => s.setPrunedServices);
+  const spanTypeFilter = useTraceTimelineStore(s => s.spanTypeFilter);
+  const zustandSetSpanTypeFilter = useTraceTimelineStore(s => s.setSpanTypeFilter);
 
   // After cleaning a stale/sanitized URL, the effect re-runs because location.search changes.
   // This ref prevents that re-run from falling through to localStorage defaults.
@@ -212,10 +214,14 @@ export function useServiceFilter(
   ]);
 
   const handleServiceFilterApply = useCallback(
-    (requested: Set<string>) => {
+    (requested: Set<string>, requestedSpanTypeFilter?: SpanTypeFilter) => {
+      const nextSpanTypeFilter = requestedSpanTypeFilter ?? EMPTY_SPAN_TYPE_FILTER;
       // Enforce root service protection even if the UI somehow allows it.
       const nextPruned = sanitizePrunedServices(requested, rootServiceNames);
       zustandSetPrunedServices(nextPruned);
+      if (zustandSetSpanTypeFilter) {
+        zustandSetSpanTypeFilter(nextSpanTypeFilter);
+      }
 
       // If the currently selected span (side panel) belongs to a pruned service, deselect it.
       if (nextPruned.size > 0 && detailPanelMode === 'sidepanel') {
@@ -223,7 +229,7 @@ export function useServiceFilter(
         const currentSelectedID = getSelectedSpanID(currentDetailStates);
         if (currentSelectedID) {
           const selectedSpan = trace.spanMap.get(currentSelectedID);
-          if (selectedSpan && isSpanPruned(selectedSpan, nextPruned)) {
+          if (selectedSpan && isSpanPruned(selectedSpan, nextPruned, nextSpanTypeFilter)) {
             // In sidepanel mode detailStates holds at most one entry (the selected span).
             // The Map shape is a leftover from inline mode where multiple spans can be
             // expanded simultaneously. Clearing the whole map is correct here.
@@ -237,6 +243,7 @@ export function useServiceFilter(
     },
     [
       zustandSetPrunedServices,
+      zustandSetSpanTypeFilter,
       detailPanelMode,
       rootServiceNames,
       trace.spanMap,
@@ -249,8 +256,15 @@ export function useServiceFilter(
   );
 
   const serviceFilterNode = useMemo(
-    () => <ServiceFilter trace={trace} prunedServices={prunedServices} onApply={handleServiceFilterApply} />,
-    [trace, prunedServices, handleServiceFilterApply]
+    () => (
+      <ServiceFilter
+        trace={trace}
+        prunedServices={prunedServices}
+        spanTypeFilter={spanTypeFilter}
+        onApply={handleServiceFilterApply}
+      />
+    ),
+    [trace, prunedServices, spanTypeFilter, handleServiceFilterApply]
   );
 
   return { prunedServices, serviceFilterNode };

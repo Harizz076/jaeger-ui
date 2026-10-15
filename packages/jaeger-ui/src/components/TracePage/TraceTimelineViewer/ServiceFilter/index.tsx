@@ -6,7 +6,8 @@ import { Button, Checkbox, Popover, Tooltip } from 'antd';
 import { IoFunnel, IoFunnelOutline } from 'react-icons/io5';
 
 import colorGenerator from '../../../../utils/color-generator';
-import { IOtelTrace } from '../../../../types/otel';
+import { GenAISpanKind, IOtelTrace } from '../../../../types/otel';
+import { EMPTY_SPAN_TYPE_FILTER, SpanTypeFilter } from '../generateRowStates';
 import { SVC_FILTER_DEFAULTS_KEY, SvcFilterDefaults } from '../../url/svcFilter';
 
 import './ServiceFilter.css';
@@ -15,7 +16,16 @@ import storage from '../../../../utils/storage';
 type ServiceFilterProps = {
   trace: IOtelTrace;
   prunedServices: Set<string>;
-  onApply: (prunedServices: Set<string>) => void;
+  spanTypeFilter?: SpanTypeFilter;
+  onApply: (prunedServices: Set<string>, spanTypeFilter?: SpanTypeFilter) => void;
+};
+
+const GEN_AI_KIND_LABELS: Record<GenAISpanKind, string> = {
+  LLM_CALL: 'LLM calls',
+  TOOL_CALL: 'Tool calls',
+  AGENT: 'Agents',
+  RETRIEVAL: 'Retrievals',
+  UNKNOWN_GENAI: 'Other GenAI spans',
 };
 
 function saveDefaults(prunedServices: Set<string>) {
@@ -23,9 +33,19 @@ function saveDefaults(prunedServices: Set<string>) {
   storage.set(SVC_FILTER_DEFAULTS_KEY, defaults);
 }
 
-export default function ServiceFilter({ trace, prunedServices, onApply }: ServiceFilterProps) {
+export default function ServiceFilter({
+  trace,
+  prunedServices,
+  spanTypeFilter: providedSpanTypeFilter,
+  onApply,
+}: ServiceFilterProps) {
+  const spanTypeFilter = providedSpanTypeFilter ?? EMPTY_SPAN_TYPE_FILTER;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Set<string>>(new Set());
+  const [draftTypeFilter, setDraftTypeFilter] = useState<SpanTypeFilter>({
+    hiddenGenAIKinds: new Set(),
+    hideNonGenAISpans: false,
+  });
 
   const serviceEntries = useMemo(() => {
     const sorted = [...trace.services].sort((a, b) => a.name.localeCompare(b.name));
@@ -46,17 +66,30 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
   const singleRootService = rootServices.size === 1;
   const lockedService = singleRootService ? [...rootServices][0] : null;
 
-  const isFilterActive = prunedServices.size > 0;
+  const genAIKinds = useMemo(() => {
+    const kinds = new Set<GenAISpanKind>();
+    for (const span of trace.spans) {
+      if (span.genAIKind) kinds.add(span.genAIKind);
+    }
+    return [...kinds].sort();
+  }, [trace.spans]);
+
+  const hasSpanTypeFilter = spanTypeFilter.hideNonGenAISpans || spanTypeFilter.hiddenGenAIKinds.size > 0;
+  const isFilterActive = prunedServices.size > 0 || hasSpanTypeFilter;
 
   const handleOpenChange = useCallback(
     (newOpen: boolean) => {
       if (newOpen) {
         // Initialize draft from current pruned state.
         setDraft(new Set(prunedServices));
+        setDraftTypeFilter({
+          hiddenGenAIKinds: new Set(spanTypeFilter.hiddenGenAIKinds),
+          hideNonGenAISpans: spanTypeFilter.hideNonGenAISpans,
+        });
       }
       setOpen(newOpen);
     },
-    [prunedServices]
+    [prunedServices, spanTypeFilter]
   );
 
   const handleToggle = useCallback(
@@ -83,15 +116,29 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
   }, [serviceEntries, lockedService]);
 
   const handleApply = useCallback(() => {
-    onApply(draft);
+    if (providedSpanTypeFilter) onApply(draft, draftTypeFilter);
+    else onApply(draft);
     setOpen(false);
-  }, [draft, onApply]);
+  }, [draft, draftTypeFilter, onApply, providedSpanTypeFilter]);
 
   const handleSaveAsDefault = useCallback(() => {
     saveDefaults(draft);
-    onApply(draft);
+    if (providedSpanTypeFilter) onApply(draft, draftTypeFilter);
+    else onApply(draft);
     setOpen(false);
-  }, [draft, onApply]);
+  }, [draft, draftTypeFilter, onApply, providedSpanTypeFilter]);
+
+  const handleTypeToggle = useCallback((kind: GenAISpanKind | 'non-genai') => {
+    setDraftTypeFilter(previous => {
+      if (kind === 'non-genai') {
+        return { ...previous, hideNonGenAISpans: !previous.hideNonGenAISpans };
+      }
+      const hiddenGenAIKinds = new Set(previous.hiddenGenAIKinds);
+      if (hiddenGenAIKinds.has(kind)) hiddenGenAIKinds.delete(kind);
+      else hiddenGenAIKinds.add(kind);
+      return { ...previous, hiddenGenAIKinds };
+    });
+  }, []);
 
   // Validation: at least one root span must remain visible.
   const wouldRemoveAllRoots = useMemo(() => {
@@ -114,7 +161,7 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
   const content = (
     <div className="ServiceFilter--popover" role="dialog" aria-label="Filter services">
       <div className="ServiceFilter--description">
-        Select which services are visible. Unselected services will be pruned along with their full subtrees.
+        Select which spans are visible. Unselected spans are pruned along with their full subtrees.
       </div>
       <div className="ServiceFilter--actions">
         <Button size="small" onClick={handleSelectAll}>
@@ -124,6 +171,36 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
           Select None
         </Button>
       </div>
+      {trace.isGenAITrace && (
+        <>
+          <div className="ServiceFilter--sectionTitle">Span types</div>
+          <div className="ServiceFilter--list" role="group" aria-label="Span type visibility">
+            <div className="ServiceFilter--item">
+              <Checkbox
+                checked={!draftTypeFilter.hideNonGenAISpans}
+                onChange={() => handleTypeToggle('non-genai')}
+                aria-label={`${draftTypeFilter.hideNonGenAISpans ? 'Show' : 'Hide'} non-GenAI spans`}
+              >
+                Non-GenAI spans
+              </Checkbox>
+            </div>
+            {genAIKinds.map(kind => {
+              const isVisible = !draftTypeFilter.hiddenGenAIKinds.has(kind);
+              return (
+                <div key={kind} className="ServiceFilter--item">
+                  <Checkbox
+                    checked={isVisible}
+                    onChange={() => handleTypeToggle(kind)}
+                    aria-label={`${isVisible ? 'Hide' : 'Show'} ${GEN_AI_KIND_LABELS[kind]}`}
+                  >
+                    {GEN_AI_KIND_LABELS[kind]}
+                  </Checkbox>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
       <div className="ServiceFilter--list" role="group" aria-label="Service visibility">
         {serviceEntries.map(({ name, numberOfSpans }) => {
           const isVisible = !draft.has(name);
@@ -172,8 +249,8 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
     </div>
   );
 
-  // Don't show filter for single-service traces.
-  if (serviceEntries.length <= 1) {
+  // Don't show the filter only when neither services nor span types offer a choice.
+  if (serviceEntries.length <= 1 && !trace.isGenAITrace) {
     return null;
   }
 
@@ -191,7 +268,7 @@ export default function ServiceFilter({ trace, prunedServices, onApply }: Servic
           className={`ServiceFilter--button ${isFilterActive ? 'is-active' : ''}`}
           role="button"
           tabIndex={0}
-          aria-label={isFilterActive ? 'Service filter active' : 'Filter services'}
+          aria-label={isFilterActive ? 'Trace filter active' : 'Filter trace'}
           aria-pressed={isFilterActive}
           data-testid="service-filter-button"
           onKeyDown={e => {
